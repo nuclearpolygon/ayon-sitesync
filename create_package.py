@@ -36,6 +36,13 @@ import subprocess
 from typing import Optional, Iterable, Pattern, Union, List, Tuple
 
 import package
+try:
+    import ayon_api
+    from ayon_api import get_server_api_connection
+
+    has_ayon_api = True
+except ModuleNotFoundError:
+    has_ayon_api = False
 
 FileMapping = Tuple[Union[str, io.BytesIO], str]
 ADDON_NAME: str = package.name
@@ -51,6 +58,7 @@ PRIVATE_ROOT: str = os.path.join(CURRENT_ROOT, "private")
 PUBLIC_ROOT: str = os.path.join(CURRENT_ROOT, "public")
 CLIENT_ROOT: str = os.path.join(CURRENT_ROOT, "client")
 
+CURRENT_DIR: str = os.path.dirname(os.path.abspath(__file__))
 VERSION_PY_CONTENT = f'''# -*- coding: utf-8 -*-
 """Package declaring AYON addon '{ADDON_NAME}' version."""
 __version__ = "{ADDON_VERSION}"
@@ -388,6 +396,12 @@ def copy_client_code(output_dir: str, log: logging.Logger):
     log.info("Client copy finished")
 
 
+def get_output_dir(output_dir: str) -> str:
+    if output_dir:
+        return output_dir
+    return os.path.join(CURRENT_DIR, "package")
+
+
 def copy_addon_package(
     output_dir: str,
     files_mapping: List[FileMapping],
@@ -539,10 +553,37 @@ if __name__ == "__main__":
         action="store_true",
         help="Debug log messages."
     )
+    parser.add_argument(
+        "--upload",
+        dest="upload",
+        action="store_true",
+        help="Upload the build to your ayon server and reload",
+    )
 
     args = parser.parse_args(sys.argv[1:])
+    upload_package = args.upload and not args.skip_zip
+    if upload_package and not has_ayon_api:
+        raise RuntimeError(
+            "Module 'ayon_api' is not available. Please install it"
+            " to use the upload feature (pip install ayon-python-api)."
+        )
     level = logging.INFO
     if args.debug:
         level = logging.DEBUG
     logging.basicConfig(level=level)
+    output_dir: str = get_output_dir(args.output_dir)
     main(args.output_dir, args.skip_zip, args.only_client)
+    if upload_package:
+        output_path = os.path.join(
+            output_dir, f"{ADDON_NAME}-{ADDON_VERSION}.zip"
+        )
+
+        ayon_api.init_service()
+        log: logging.Logger = logging.getLogger("upload_package")
+        log.info("Trying to upload zip")
+        response = ayon_api.upload_addon_zip(output_path)
+        server = get_server_api_connection()
+        if server:
+            server.trigger_server_restart()
+        else:
+            log.warning("Could not restart server")

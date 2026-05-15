@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "SiteSync"
-version = "1.2.6+dev"
+version = "1.2.6"
 description = "SiteSync Addon"
 authors = ["Ynput s.r.o. <info@ynput.io>"]
 license = "MIT License"
@@ -15,3 +15,9 @@ python = "^3.9"
 
 [tool.poetry.group.dev.dependencies]
 requests = "^2.32.3"
+setuptools = "*"
+
+[dependency-groups]
+dev = [
+    "ayon-python-api==1.2.14"
+]

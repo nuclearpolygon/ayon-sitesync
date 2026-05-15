@@ -2,3 +2,6 @@
 sftpretty = "^1.2.0"
 dropbox = "^11.20.0"
 google-api-python-client = "^1.12.8"
+
+[tool.poetry.dependencies]
+pkg_resources = "*"
