@@ -12,6 +12,7 @@ from .providers.gdrive import GoogleDriveSubmodel
 from .providers.dropbox import DropboxSubmodel
 from .providers.sftp import SFTPSubmodel
 from .providers.rclone import RCloneSubmodel
+from .providers.s3 import S3Submodel
 
 if typing.TYPE_CHECKING:
     from ayon_server.addons import BaseServerAddon
@@ -138,6 +139,10 @@ class SitesSubmodel(BaseSettingsModel):
     )
     rclone: RCloneSubmodel = Field(
         default_factory=RCloneSubmodel,
+        scope=["studio", "project", "site"]
+    )
+    s3: S3Submodel = Field(
+        default_factory=S3Submodel,
         scope=["studio", "project", "site"]
     )
 
