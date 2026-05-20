@@ -1,7 +1,8 @@
 import os
 import time
-import platform
+import hashlib
 from typing import Optional, Dict, List, Any
+from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
@@ -48,7 +49,6 @@ class S3Handler(AbstractProvider):
         self.active = False
         self.project_name = project_name
         self.site_name = site_name
-        self.client = None
         self.bucket = None
 
         self.presets = presets
@@ -118,7 +118,7 @@ class S3Handler(AbstractProvider):
 
         except NoCredentialsError:
             msg = "Sync Server: No valid AWS credentials found for S3 provider"
-            self.log.info(msg)
+            self.log.error(msg)
             return
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', '')
@@ -126,11 +126,11 @@ class S3Handler(AbstractProvider):
                 msg = f"Sync Server: Bucket '{self.bucket}' does not exist"
             else:
                 msg = f"Sync Server: Failed to connect to S3: {str(e)}"
-            self.log.info(msg)
+            self.log.error(msg)
             return
         except Exception as e:
             msg = f"Sync Server: Failed to initialize S3 client: {str(e)}"
-            self.log.info(msg)
+            self.log.error(msg)
             return
 
         self._tree = tree
@@ -156,10 +156,14 @@ class S3Handler(AbstractProvider):
                      {"root": {"root_ONE": "value", "root_TWO":"value}}
             Format is importing for usage of python's format ** approach
         """
-        roots = self.presets.get("root", {})
+        _roots = self.presets.get("root", [])
+        roots = {}
+        for root_obj in _roots:
+            roots[root_obj['root_name']] = root_obj['remote_path']
+
         if not roots:
             # Default to bucket root
-            roots = {"root": "/"}
+            raise Exception('Roots must be specified for the anatomy.')
         return {"root": roots}
 
     def get_tree(self):
@@ -174,7 +178,7 @@ class S3Handler(AbstractProvider):
             self._tree = {}
         return self._tree
 
-    def create_folder(self, path):
+    def create_folder(self, path: str | Path):
         """
             Create all nonexistent folders and subfolders in 'path'.
             In S3, folders are just zero-byte objects with key ending in '/'.
@@ -185,14 +189,15 @@ class S3Handler(AbstractProvider):
             (string) folder path of lowest subfolder from 'path'
         """
         # Clean path
-        path = path.strip('/')
         if not path:
             return "/"
 
-        parts = path.split("/")
+        if isinstance(path, str):
+            path = Path(path)
+
         current_path = ""
 
-        for part in parts:
+        for part in path.parts:
             current_path = f"{current_path}/{part}" if current_path else part
             folder_key = f"{current_path}/"
 
@@ -242,56 +247,66 @@ class S3Handler(AbstractProvider):
             (string) file_id/key of created/modified file ,
                 throws FileExistsError, FileNotFoundError exceptions
         """
-        if not os.path.isfile(source_path):
-            raise FileNotFoundError("Source file {} doesn't exist."
-                                    .format(source_path))
+        source_path = Path(source_path)
+        if not source_path.is_file():
+            raise FileNotFoundError(f"Source file {source_path} doesn't exist.")
 
-        # Parse target path
-        target_path = target_path.strip('/')
-        root, ext = os.path.splitext(target_path)
-        if ext:
-            # full path with file name
-            target_name = os.path.basename(target_path)
-            target_folder = os.path.dirname(target_path)
+        target_path = Path(target_path)
+        if target_path.suffix:
+            target_name = target_path.name
+            target_folder = target_path.parent
         else:
-            # just folder path, use source filename
-            target_name = os.path.basename(source_path)
+            target_name = source_path.name
             target_folder = target_path
 
-        s3_key = f"{target_folder}/{target_name}" if target_folder else target_name
+        s3_key = (target_folder / target_name).as_posix()
         s3_key = s3_key.strip('/')
 
-        # Check if file exists
-        target_file = self.file_path_exists(s3_key)
-        if target_file and not overwrite:
-            raise FileExistsError("File already exists, "
-                                  "use 'overwrite' argument")
+        # --- Check First, Skip If Identical ---
+        existing_file = self.file_path_exists(s3_key)
+        if existing_file:
+            self.log.debug(f"File already exists at {s3_key}, checking identity...")
+            # Perform a hash comparison if the local file isn't too large,
+            # or rely on ETag/size for a quick check. For highest reliability,
+            # compute a local MD5 hash and compare with S3's ETag (which is
+            # often the MD5 hash for single-part uploads).
+            try:
+                local_hash = self._calculate_local_md5(source_path)
+                # S3 ETag is often the MD5 hash, but for multipart uploads
+                # it has a different format. This provides a strong heuristic.
+                if local_hash and existing_file.get("etag") == local_hash:
+                    self.log.info(f"Skipping upload. Identical file already exists at {s3_key}")
+                    # Return the existing key to satisfy the core sync logic
+                    return s3_key
+                else:
+                    self.log.debug("File exists but checksum differs. Proceeding with overwrite.")
+            except Exception as e:
+                self.log.warning(f"Could not verify file hash: {e}. Proceeding with upload.")
 
-        # Ensure folder exists
+        if existing_file and not overwrite:
+            raise FileExistsError("File already exists, use 'overwrite' argument")
+
+        # Ensure the target folder exists
         if target_folder:
             self.create_folder(target_folder)
 
-        # Get file size for progress tracking
+        # --- Perform the Upload ---
         file_size = os.path.getsize(source_path)
-
         try:
-            # Use multipart upload for large files
             if file_size > self.CHUNK_SIZE:
                 response = self._multipart_upload(
                     source_path, s3_key, addon, project_name,
                     file, repre_status, site_name
                 )
             else:
-                # Simple upload for small files
                 with open(source_path, 'rb') as f:
                     self.client.put_object(
                         Bucket=self.bucket,
                         Key=s3_key,
                         Body=f.read()
                     )
-                response = {"ETag": ""}  # Simplified response
+                response = {"ETag": ""}
 
-            # Update tree cache
             if self._tree is not None:
                 self._tree[s3_key] = {"key": s3_key}
 
@@ -300,6 +315,19 @@ class S3Handler(AbstractProvider):
         except ClientError as e:
             self.log.error(f"Failed to upload file {source_path}: {str(e)}")
             raise
+
+    @staticmethod
+    def _calculate_local_md5(file_path: str | Path) -> str | None:
+        """Helper to calculate an MD5 hash of a local file."""
+        hash_md5 = hashlib.md5()
+        try:
+            with open(file_path, "rb") as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hash_md5.update(chunk)
+            return hash_md5.hexdigest()
+        except Exception as e:
+            print(e)
+            return None
 
     def _multipart_upload(self, source_path, s3_key, addon, project_name,
                           file, repre_status, site_name):
@@ -403,7 +431,7 @@ class S3Handler(AbstractProvider):
         """
             Downloads single file from 'source_path' (remote) to 'local_path'.
             It creates all folders on the local_path if are not existing.
-            By default existing file on 'local_path' will trigger an exception
+            By default, existing file on 'local_path' will trigger an exception
 
         Args:
             source_path (string): absolute path on provider
@@ -632,7 +660,7 @@ class S3Handler(AbstractProvider):
 
         return False
 
-    def file_path_exists(self, file_path):
+    def file_path_exists(self, file_path: str) -> Dict[str, str] | bool:
         """
             Checks if 'file_path' exists in S3
 
@@ -657,7 +685,6 @@ class S3Handler(AbstractProvider):
         except ClientError as e:
             if e.response['Error']['Code'] == '404':
                 return False
-            raise
 
         return False
 

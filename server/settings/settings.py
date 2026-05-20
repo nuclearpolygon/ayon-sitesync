@@ -69,7 +69,8 @@ def provider_resolver():
         "local_drive": "Local Drive",
         "dropbox": "Dropbox",
         "sftp": "SFTP",
-        "rclone": "Rclone"
+        "rclone": "Rclone",
+        "s3": "S3"
     }
     return [{"value": f"{key}", "label": f"{label}"}
             for key, label in provider_dict.items()]

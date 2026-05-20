@@ -1,5 +1,10 @@
 from pydantic import Field
-from ayon_server.settings import BaseSettingsModel
+from ayon_server.settings import BaseSettingsModel, SettingsField
+
+class S3RootsModel(BaseSettingsModel):
+    _layout = "expanded"
+    root_name: str = SettingsField("", title="Root Name")
+    remote_path: str = SettingsField("", title="Remote Path")
 
 
 class S3CredentialsModel(BaseSettingsModel):
@@ -58,10 +63,9 @@ class S3Submodel(BaseSettingsModel):
         description="S3 bucket name"
     )
 
-    roots: str = Field(
-        "",
-        title="S3 root folder",
-        scope=["studio", "project"],
+    roots: list[S3RootsModel] = SettingsField(
+        defalt_factory=list,
+        title="S3 roots",
         description="Root folder path within the S3 bucket"
     )
 

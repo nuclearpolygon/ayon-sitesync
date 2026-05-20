@@ -8,7 +8,7 @@ dependencies = [
 
 [tool.poetry]
 name = "SiteSync"
-version = "1.2.6"
+version = "1.2.7"
 description = "SiteSync Addon"
 authors = ["Ynput s.r.o. <info@ynput.io>"]
 license = "MIT License"
@@ -25,7 +25,13 @@ python = "^3.9"
 requests = "^2.32.3"
 setuptools = "<82.0.0"
 
+[tool.uv.sources]
+core = { path = "../ayon-core/client" }
+ayon-server = { path = "../ayon-backend" }
+
 [dependency-groups]
 dev = [
-    "ayon-python-api==1.2.14"
+    "ayon-python-api==1.2.14",
+    "ayon-server",
+    "core",
 ]
